@@ -1,0 +1,51 @@
+# Checks every change to the tap on GitHub's Macs, so a broken cask is caught on
+# the pull request before it reaches main (which is what `brew install` uses).
+#
+# For each cask: Homebrew's style check, its strict online audit (downloads the
+# app and checks the version, checksum and signature), then a real install and
+# uninstall into a temporary folder.
+name: Audit
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Homebrew's online audit calls the GitHub API; shared runners hit the anonymous rate
+  # limit, so give it this run's (read-only) token.
+  HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_ANALYTICS: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+
+jobs:
+  audit:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Homebrew version
+        run: brew --version
+
+      - name: Tap this checkout
+        run: |
+          git checkout -B ci   # brew taps by cloning, which needs a branch, not a detached commit
+          brew tap h3xy/tap "$PWD"
+          brew trust h3xy/tap 2>/dev/null || true   # newer Homebrew asks you to trust third-party taps
+
+      - name: Style, audit, install and uninstall each cask
+        run: |
+          for file in Casks/*.rb; do
+            cask="h3xy/tap/$(basename "$file" .rb)"
+            echo "::group::$cask"
+            brew style --cask "$cask"
+            brew audit --cask --strict --online "$cask"
+            brew install --cask --appdir "$RUNNER_TEMP/apps" "$cask"
+            brew uninstall --cask "$cask"
+            echo "::endgroup::"
+          done
